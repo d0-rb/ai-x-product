@@ -7,8 +7,6 @@ import pandas as pd
 from dotenv import load_dotenv
 import os
 import dbm
-
-
 load_dotenv()
 
 openai.api_key = os.getenv("OPENAI_API_KEY")
@@ -70,8 +68,17 @@ async def get_task(query: str, limit: int = 10):
     top_tasks = task_table.search(query_embedding).limit(limit)
     top_tasks = top_tasks.to_df().session.tolist()
     top_tasks = list(map(lambda x: json.loads(current_actions_db[str(x)]) if str(x) in current_actions_db else [], top_tasks))
-
+    
     return json.dumps(top_tasks)
+
+@app.post("/describe_task")
+async def describe_task(task: str):
+    response = openai.Completion.create(
+        model="text-davinci-003",
+        prompt="Describe the following task in a few sentences: \n" + task
+    )
+    return response
+
 
 def vectorize_task(task):
     finish_task_event = tuple(filter(lambda x: x['event_name'] == 'FinishTask', task))[0]
