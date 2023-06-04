@@ -4,14 +4,19 @@ import openai
 from fastapi import FastAPI
 from pydantic import BaseModel
 import pandas as pd
+from dotenv import load_dotenv
+import os
+import dbm
 
-openai.api_key = "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"
+
+load_dotenv()
+
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 #TODO - newrelic stuff since this is in python?
-# import os
-# os.environ["NEW_RELIC_LICENSE_KEY"] = "bce3af8473051217f786397906e6cbe4c63eNRAL"
-# from nr_openai_observability import monitor
-# monitor.initialization()
+os.environ["NEW_RELIC_LICENSE_KEY"] = os.getenv("NEW_RELIC_LICENSE_KEY")
+from nr_openai_observability import monitor
+monitor.initialization()
 
 uri = './tmp/lancedb'
 db = lancedb.connect(uri)
@@ -20,11 +25,12 @@ try:
 except:
     action_table = db.open_table('actions')
 try:
-    task_table = db.create_table('tasks', data=[{'vector': [0] * 1536, 'actions': [{}]}])
+    task_table = db.create_table('tasks', data=[{'vector': [0] * 1536, 'session': 0}])
 except:
     task_table = db.open_table('tasks')
 
 current_actions = {}
+current_actions_db = dbm.open('current_actions', 'c')
 
 
 app = FastAPI()
@@ -49,9 +55,10 @@ async def action(event_name: str, event: dict):
             
             task_table.add([{
                 'vector': task_vector,
-                # TODO: only pass unique identifier here for standard schema
-                'actions': current_actions[session],
+                'session': session,
             }])
+            current_actions_db[str(session)] = json.dumps(current_actions[session])
+
             del current_actions[session]
 
     return {"message": "Hello World"}
@@ -61,9 +68,10 @@ async def action(event_name: str, event: dict):
 async def get_task(query: str, limit: int = 10):
     query_embedding = openai.Embedding.create(input=[query], engine='text-embedding-ada-002')['data'][0]['embedding']
     top_tasks = task_table.search(query_embedding).limit(limit)
-    top_tasks = top_tasks.to_df()
+    top_tasks = top_tasks.to_df().session.tolist()
+    top_tasks = list(map(lambda x: json.loads(current_actions_db[str(x)]) if str(x) in current_actions_db else [], top_tasks))
 
-    return top_tasks.to_string()
+    return json.dumps(top_tasks)
 
 def vectorize_task(task):
     finish_task_event = tuple(filter(lambda x: x['event_name'] == 'FinishTask', task))[0]
@@ -72,7 +80,7 @@ def vectorize_task(task):
     history[1] = '\n\nCurrent time:' + history[1]
     history.insert(1, finish_task_event['response'])
 
-    history = '\n'.join(history)
+    history = '\n'.join(history)[:]
     
     return openai.Embedding.create(input=[history], engine='text-embedding-ada-002')['data'][0]['embedding']
 
